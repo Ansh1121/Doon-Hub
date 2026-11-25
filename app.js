@@ -82,9 +82,14 @@ async function route() {
     buildChips();
     return showScreen('onboarding');
   }
-  $('hello').textContent = 'Hi, ' + profile.name;
+  const fromSpotify = new URLSearchParams(location.search).has('code') || new URLSearchParams(location.search).has('error');
+  if (fromSpotify) await finishSpotify();
+  $('hello').textContent = 'Hi, ' + me.profile.name;
   showScreen('app');
+  showTab(fromSpotify ? 'profile' : 'discover');
   loadDiscover();
+  refreshBadge();
+  if (!pollId) pollId = setInterval(refreshBadge, 30000);
 }
 
 // ---------- 5. PROFILE SETUP ----------
@@ -156,11 +161,15 @@ $('profile-form').addEventListener('submit', async (e) => {
 });
 
 // ---------- 6. TABS AND LOG OUT ----------
+function showTab(name) {
+  document.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('hidden', v.id !== 'view-' + name));
+  if (name === 'activity') loadActivity();
+  if (name === 'bounties') loadBounties();
+  if (name === 'profile') renderProfileTab();
+}
 document.querySelectorAll('[data-tab]').forEach((btn) => {
-  btn.onclick = () => {
-    document.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b === btn));
-    document.querySelectorAll('.view').forEach((v) => v.classList.toggle('hidden', v.id !== 'view-' + btn.dataset.tab));
-  };
+  btn.onclick = () => showTab(btn.dataset.tab);
 });
 $('logout').onclick = async () => {
   await db.auth.signOut();
@@ -190,7 +199,8 @@ async function loadDiscover() {
   const mine = new Set(me.profile.interests);
   deck = (data || [])
     .map((p) => ({ p, shared: p.interests.filter((i) => mine.has(i)) }))
-    .sort((x, y) => y.shared.length - x.shared.length); // most shared interests first
+    .sort((x, y) => (y.shared.length + 2 * sharedArtists(y.p).length) - (x.shared.length + 2 * sharedArtists(x.p).length));
+  // most in common first (a shared artist counts double)
   renderTop();
 }
 
@@ -206,6 +216,18 @@ function renderTop() {
     return;
   }
   const { p, shared } = deck[0];
+  const card = buildCard(p, shared);
+  attachDrag(card);
+  stage.append(card);
+}
+
+function sharedArtists(p) {
+  if (!me || p.id === me.user.id) return [];
+  const mine = new Set(Array.isArray(me.profile.spotify_artists) ? me.profile.spotify_artists : []);
+  return (Array.isArray(p.spotify_artists) ? p.spotify_artists : []).filter((n) => mine.has(n));
+}
+
+function buildCard(p, shared) {
   const card = el('article', 'pcard');
   const img = el('img', 'pphoto');
   img.alt = 'Photo of ' + p.name;
@@ -221,9 +243,22 @@ function renderTop() {
   body.append(chips);
   if (shared.length) body.append(el('p', 'pshared', 'You both like ' + shared.join(', ')));
 
+  const arts = Array.isArray(p.spotify_artists) ? p.spotify_artists : [];
+  if (arts.length) {
+    const common = sharedArtists(p);
+    const box = el('div', 'spot-box');
+    box.append(el('p', 'spot-title', 'Spotify Heavy Rotation'));
+    const row = el('div', 'chips');
+    arts.forEach((n) => row.append(el('span', 'tag' + (common.includes(n) ? ' shared' : ''), n)));
+    box.append(row);
+    if (common.length) box.append(el('p', 'pshared', 'You both listen to ' + common.join(', ')));
+    const genres = Array.isArray(p.spotify_genres) ? p.spotify_genres : [];
+    if (genres.length) box.append(el('p', 'ploc', genres.join(' / ')));
+    body.append(box);
+  }
+
   card.append(img, body);
-  attachDrag(card);
-  stage.append(card);
+  return card;
 }
 
 function attachDrag(card) {
@@ -295,12 +330,378 @@ $('match-close').onclick = () => $('match').classList.add('hidden');
 $('pass').onclick = () => swipe(false);
 $('like').onclick = () => swipe(true);
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') return $('match').classList.add('hidden');
+  if (e.key === 'Escape') { ['match', 'pview', 'bmodal', 'amodal'].forEach((id) => $(id).classList.add('hidden')); return; }
   const onDiscover = !$('app').classList.contains('hidden') && !$('view-discover').classList.contains('hidden');
   if (!onDiscover || !$('match').classList.contains('hidden')) return;
   if (e.key === 'ArrowLeft') swipe(false);
   if (e.key === 'ArrowRight') swipe(true);
 });
+
+// ---------- 8. ACTIVITY (system inbox) ----------
+let pollId = null;
+
+function timeAgo(iso) {
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  return Math.floor(s / 86400) + ' d ago';
+}
+
+function setBadge(n) {
+  $('badge').textContent = n;
+  $('badge').classList.toggle('hidden', !n);
+}
+
+async function refreshBadge() {
+  if (!me) return;
+  const { count } = await db.from('notifications')
+    .select('id', { count: 'exact', head: true }).eq('is_read', false);
+  setBadge(count || 0);
+}
+
+async function loadActivity() {
+  const { data, error } = await db.from('notifications')
+    .select('*').order('created_at', { ascending: false }).limit(50);
+  if (error) return say($('amsg'), 'Could not load activity: ' + error.message);
+  say($('amsg'), '');
+  const list = $('alist');
+  list.replaceChildren();
+  if (!data.length) list.append(el('p', 'empty', 'Nothing yet. Matches and accepted bounties will show up here.'));
+  data.forEach((n) => list.append(alertItem(n)));
+  if (data.some((n) => !n.is_read)) {
+    await db.from('notifications').update({ is_read: true }).eq('user_id', me.user.id).eq('is_read', false);
+  }
+  setBadge(0);
+}
+
+function alertItem(n) {
+  const item = el('article', 'alert' + (n.is_read ? '' : ' unread'));
+  item.append(el('p', 'amsgtxt', n.message), el('p', 'atime', timeAgo(n.created_at)));
+  const row = el('div', 'arow');
+  if (n.unlocked_ig) {
+    item.append(el('p', 'handle small', '@' + n.unlocked_ig));
+    const copy = el('button', 'btn small', 'Copy @handle');
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText('@' + n.unlocked_ig); copy.textContent = 'Copied'; }
+      catch { copy.textContent = 'Copy failed'; }
+    };
+    const open = el('a', 'btn small ghost', 'Open Instagram');
+    open.href = 'https://instagram.com/' + encodeURIComponent(n.unlocked_ig);
+    open.target = '_blank';
+    open.rel = 'noopener';
+    row.append(copy, open);
+  }
+  if (n.actor_id) {
+    const view = el('button', 'btn small ghost', 'View profile');
+    view.onclick = () => viewProfile(n.actor_id);
+    row.append(view);
+  }
+  item.append(row);
+  return item;
+}
+
+async function viewProfile(id) {
+  const { data: p, error } = await db.from('profiles').select('*').eq('id', id).maybeSingle();
+  if (error || !p) return alert('Could not load this profile.');
+  const mine = new Set(me.profile.interests);
+  const body = $('pview-body');
+  body.replaceChildren(buildCard(p, p.interests.filter((i) => mine.has(i))));
+  const row = el('div', 'arow');
+  const rep = el('button', 'btn small ghost', 'Report');
+  rep.onclick = () => reportUser(id);
+  const blk = el('button', 'btn small ghost', 'Block');
+  blk.onclick = () => blockUser(id);
+  row.append(rep, blk);
+  body.append(row);
+  $('pview').classList.remove('hidden');
+}
+
+async function reportUser(id) {
+  const reason = prompt('What is the problem? (3 to 500 characters)');
+  if (!reason || reason.trim().length < 3) return;
+  const { error } = await db.from('reports')
+    .insert({ reporter_id: me.user.id, reported_id: id, reason: reason.trim().slice(0, 500) });
+  alert(error ? 'Could not send report: ' + error.message : 'Report sent. Thank you.');
+}
+
+async function blockUser(id) {
+  if (!confirm('Block this person? You will not see each other in Discover.')) return;
+  const { error } = await db.from('blocks').insert({ blocker_id: me.user.id, blocked_id: id });
+  if (error) return alert('Could not block: ' + error.message);
+  $('pview').classList.add('hidden');
+  loadDiscover();
+}
+
+$('pview-close').onclick = () => $('pview').classList.add('hidden');
+
+// ---------- 9. BOUNTIES ----------
+let bountyTab = 'board';
+const fmtTime = (iso) => new Date(iso).toLocaleString('en-IN',
+  { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+
+function setBountyTab(t, load = true) {
+  bountyTab = t;
+  $('bt-board').classList.toggle('on', t === 'board');
+  $('bt-mine').classList.toggle('on', t === 'mine');
+  if (load) loadBounties();
+}
+$('bt-board').onclick = () => setBountyTab('board');
+$('bt-mine').onclick = () => setBountyTab('mine');
+const loadBounties = () => (bountyTab === 'board' ? loadBoard() : loadMine());
+
+async function loadBoard() {
+  say($('bmsg'), 'Loading...', true);
+  const { data, error } = await db.rpc('get_bounty_feed');
+  if (error) return say($('bmsg'), 'Could not load bounties: ' + error.message);
+  say($('bmsg'), '');
+  const list = $('blist');
+  list.replaceChildren();
+  if (!data.length) list.append(el('p', 'empty', 'No open bounties right now. Post the first one!'));
+  data.forEach((b) => list.append(bountyCard(b)));
+}
+
+function bountyCard(b) {
+  const c = el('article', 'alert bcard');
+  const top = el('div', 'bhost');
+  const img = el('img', 'bavatar');
+  img.alt = '';
+  if (b.host_avatar && b.host_avatar.startsWith(AVATAR_PREFIX)) img.src = b.host_avatar;
+  const who = el('div');
+  who.append(el('strong', '', `${b.host_name}, ${b.host_age}`), el('div', 'atime', b.host_locality));
+  top.append(img, who);
+  c.append(top, el('span', 'tag cat', b.category), el('h3', 'btitle', b.title));
+  if (b.description) c.append(el('p', 'pbio', b.description));
+  const left = b.max_spots - b.accepted_count;
+  c.append(el('p', 'atime', `${fmtTime(b.event_time)} - ${b.locality} - ${left} of ${b.max_spots} spots left`));
+
+  const btn = el('button', 'btn small');
+  if (b.my_status === 'accepted') {
+    btn.textContent = 'Accepted! See Activity';
+    btn.onclick = () => showTab('activity');
+  } else if (b.my_status === 'declined') {
+    btn.textContent = 'Not this time';
+    btn.disabled = true;
+  } else if (b.my_status === 'pending') {
+    btn.textContent = 'Applied - tap to withdraw';
+    btn.classList.add('ghost');
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const { error } = await db.from('bounty_applications').delete()
+        .eq('bounty_id', b.id).eq('applicant_id', me.user.id);
+      if (error) { btn.disabled = false; return say($('bmsg'), error.message); }
+      loadBoard();
+    };
+  } else {
+    btn.textContent = left > 0 ? "I'm In / Apply" : 'Full';
+    btn.disabled = left <= 0;
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const { error } = await db.rpc('apply_to_bounty', { bid: b.id });
+      if (error) { btn.disabled = false; return say($('bmsg'), error.message); }
+      loadBoard();
+    };
+  }
+  const hostBtn = el('button', 'btn small ghost', 'View host');
+  hostBtn.onclick = () => viewProfile(b.host_id);
+  const row = el('div', 'arow');
+  row.append(btn, hostBtn);
+  c.append(row);
+  return c;
+}
+
+async function loadMine() {
+  say($('bmsg'), 'Loading...', true);
+  const { data: bs, error } = await db.from('bounties').select('*')
+    .eq('host_id', me.user.id).order('event_time', { ascending: false });
+  if (error) return say($('bmsg'), 'Could not load your bounties: ' + error.message);
+  let apps = [];
+  if (bs.length) {
+    const r = await db.from('bounty_applications').select('bounty_id,status').in('bounty_id', bs.map((b) => b.id));
+    apps = r.data || [];
+  }
+  say($('bmsg'), '');
+  const list = $('blist');
+  list.replaceChildren();
+  if (!bs.length) list.append(el('p', 'empty', 'You have not posted any bounties yet.'));
+  bs.forEach((b) => {
+    const mine = apps.filter((a) => a.bounty_id === b.id);
+    const pending = mine.filter((a) => a.status === 'pending').length;
+    const accepted = mine.filter((a) => a.status === 'accepted').length;
+    const c = el('article', 'alert');
+    c.append(el('span', 'tag cat', b.category), el('h3', 'btitle', b.title),
+      el('p', 'atime', `${fmtTime(b.event_time)} - ${b.locality} - ${accepted} of ${b.max_spots} accepted - ${b.status}`));
+    const row = el('div', 'arow');
+    const view = el('button', 'btn small', `View Applicants (${pending})`);
+    view.onclick = () => openApplicants(b);
+    const del = el('button', 'btn small ghost', 'Delete');
+    del.onclick = async () => {
+      if (!confirm('Delete this bounty and all its applications?')) return;
+      const { error: e } = await db.from('bounties').delete().eq('id', b.id);
+      if (e) return say($('bmsg'), 'Could not delete: ' + e.message);
+      loadMine();
+    };
+    row.append(view, del);
+    c.append(row);
+    list.append(c);
+  });
+}
+
+// Post a bounty
+$('post-bounty').onclick = () => {
+  $('b-loc').innerHTML = $('locality').innerHTML;
+  $('b-loc').value = me.profile.locality;
+  const soon = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+  $('b-time').min = soon.toISOString().slice(0, 16);
+  say($('b-msg'), '');
+  $('bmodal').classList.remove('hidden');
+};
+$('b-close').onclick = () => $('bmodal').classList.add('hidden');
+
+$('bounty-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = $('b-msg');
+  const when = new Date($('b-time').value);
+  if (isNaN(when) || when <= new Date()) return say(msg, 'Pick a time in the future.');
+  $('b-btn').disabled = true;
+  say(msg, 'Posting...', true);
+  const { error } = await db.from('bounties').insert({
+    host_id: me.user.id,
+    title: $('b-title').value.trim(),
+    description: $('b-desc').value.trim() || null,
+    category: $('b-cat').value,
+    locality: $('b-loc').value,
+    event_time: when.toISOString(),
+    max_spots: parseInt($('b-spots').value, 10),
+  });
+  $('b-btn').disabled = false;
+  if (error) return say(msg, error.message);
+  say(msg, '');
+  $('bounty-form').reset();
+  $('bmodal').classList.add('hidden');
+  setBountyTab('mine');
+});
+
+// Host: review applicants
+async function openApplicants(b) {
+  $('a-title').textContent = `Applicants: ${b.title}`;
+  $('amodal').classList.remove('hidden');
+  await renderApplicants(b);
+}
+$('a-close').onclick = () => { $('amodal').classList.add('hidden'); if (bountyTab === 'mine') loadMine(); };
+
+async function renderApplicants(b) {
+  const list = $('a-list');
+  list.replaceChildren();
+  say($('a-msg'), 'Loading...', true);
+  const { data: apps, error } = await db.from('bounty_applications')
+    .select('id,applicant_id,status').eq('bounty_id', b.id).order('created_at');
+  if (error) return say($('a-msg'), error.message);
+  say($('a-msg'), '');
+  if (!apps.length) return list.append(el('p', 'empty', 'Nobody has applied yet.'));
+  const { data: ps } = await db.from('profiles').select('id,name,age,locality')
+    .in('id', apps.map((a) => a.applicant_id));
+  const byId = Object.fromEntries((ps || []).map((p) => [p.id, p]));
+  apps.forEach((a) => {
+    const p = byId[a.applicant_id];
+    if (!p) return;
+    const row = el('article', 'alert');
+    const name = el('button', 'link applink', `${p.name}, ${p.age} - ${p.locality}`);
+    name.onclick = () => viewProfile(p.id);
+    row.append(name, el('p', 'atime', 'Status: ' + a.status + '. Tap the name to see their profile.'));
+    if (a.status === 'pending') {
+      const btns = el('div', 'arow');
+      const yes = el('button', 'btn small', 'Accept');
+      const no = el('button', 'btn small ghost', 'Decline');
+      yes.onclick = () => respond(b, a.id, true);
+      no.onclick = () => respond(b, a.id, false);
+      btns.append(yes, no);
+      row.append(btns);
+    }
+    list.append(row);
+  });
+}
+
+async function respond(b, appId, accept) {
+  const { error } = await db.rpc('respond_to_application', { app_id: appId, accept });
+  if (error) return say($('a-msg'), error.message);
+  await renderApplicants(b);
+  if (accept) say($('a-msg'), 'Accepted. Their Instagram is now in your Activity tab.', true);
+}
+
+// ---------- 10. MY PROFILE (preview, edit, Spotify) ----------
+const editInterests = new Set();
+
+function makeChips(box, set) {
+  box.replaceChildren();
+  INTERESTS.forEach((name) => {
+    const b = el('button', 'chip' + (set.has(name) ? ' on' : ''), name);
+    b.type = 'button';
+    b.onclick = () => { set.has(name) ? set.delete(name) : set.add(name); b.classList.toggle('on'); };
+    box.append(b);
+  });
+}
+
+async function renderProfileTab() {
+  const p = me.profile;
+  $('pv-preview').replaceChildren(buildCard(p, []));
+  $('e-locality').innerHTML = $('locality').innerHTML;
+  $('e-locality').value = p.locality;
+  $('e-college').value = p.college || '';
+  $('e-bio').value = p.bio || '';
+  editInterests.clear();
+  p.interests.forEach((i) => editInterests.add(i));
+  makeChips($('e-chips'), editInterests);
+  spotifyStatus();
+  const { data } = await db.from('private_contacts').select('instagram_handle').eq('user_id', me.user.id).maybeSingle();
+  $('e-ig').value = data ? '@' + data.instagram_handle : '';
+}
+
+$('edit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = $('e-msg');
+  const ig = $('e-ig').value.trim().replace(/^@/, '');
+  if (!/^[A-Za-z0-9._]{1,30}$/.test(ig)) return say(msg, 'Instagram handle can only have letters, numbers, . and _ .');
+  if (!editInterests.size) return say(msg, 'Pick at least one interest.');
+  $('e-btn').disabled = true;
+  say(msg, 'Saving...', true);
+  const r = await db.from('profiles').update({
+    locality: $('e-locality').value,
+    college: $('e-college').value.trim() || null,
+    bio: $('e-bio').value.trim() || null,
+    interests: [...editInterests],
+  }).eq('id', me.user.id).select().single();
+  const c = r.error ? null : await db.from('private_contacts').update({ instagram_handle: ig }).eq('user_id', me.user.id);
+  $('e-btn').disabled = false;
+  if (r.error) return say(msg, r.error.message);
+  if (c.error) return say(msg, c.error.message);
+  me.profile = r.data;
+  $('pv-preview').replaceChildren(buildCard(me.profile, []));
+  say(msg, 'Saved.', true);
+});
+
+function spotifyStatus() {
+  const a = Array.isArray(me.profile.spotify_artists) ? me.profile.spotify_artists : [];
+  $('sp-status').textContent = a.length ? 'Connected: ' + a.join(', ') : 'Not connected yet. Others will see your top artists on your card.';
+  $('sp-btn').textContent = a.length ? 'Re-sync Spotify' : 'Connect Spotify';
+}
+$('sp-btn').onclick = () => Spotify.connect().catch((err) => say($('sp-msg'), err.message));
+
+async function finishSpotify() {
+  try {
+    const top = await Spotify.handleCallback();
+    if (!top) return;
+    const { data, error } = await db.from('profiles')
+      .update({ spotify_artists: top.artists, spotify_genres: top.genres })
+      .eq('id', me.user.id).select().single();
+    if (error) throw error;
+    me.profile = data;
+  } catch (err) {
+    alert('Spotify: ' + (err.message || err));
+  }
+}
+
+$('pv-bounties').onclick = () => { setBountyTab('mine', false); showTab('bounties'); };
 
 // ---------- START ----------
 setMode(false);
