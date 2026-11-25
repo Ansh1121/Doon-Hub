@@ -103,7 +103,7 @@ nav button.on { color: var(--pine); font-weight: 700; background: var(--mist); }
 .pcard.drag { transition: none; cursor: grabbing; }
 .pcard.out-left { transform: translateX(-120%) rotate(-12deg) !important; opacity: 0; }
 .pcard.out-right { transform: translateX(120%) rotate(12deg) !important; opacity: 0; }
-.pphoto { display: block; width: 100%; aspect-ratio: 4 / 5; max-height: 460px; object-fit: cover; background: var(--line); pointer-events: none; }
+.pphoto { display: block; width: 100%; aspect-ratio: 4 / 5; max-height: min(460px, 40vh); object-fit: cover; background: var(--line); pointer-events: none; }
 .pbody { padding: 16px 18px 20px; display: grid; gap: 8px; }
 .pbody h3 { margin: 0; font: 800 1.5rem "Bricolage Grotesque", system-ui, sans-serif; letter-spacing: -0.02em; }
 .ploc, .pbio, .pshared { margin: 0; }
@@ -123,6 +123,38 @@ nav button.on { color: var(--pine); font-weight: 700; background: var(--mist); }
 a.btn { text-decoration: none; text-align: center; }
 .link { font: inherit; background: none; border: 0; color: var(--pine-soft); cursor: pointer; text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) { .pcard { transition: none; } }
+
+/* Activity */
+.alist { display: grid; gap: 12px; max-width: 560px; }
+.alert { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 6px; }
+.alert.unread { border-left: 5px solid var(--marigold); }
+.amsgtxt { margin: 0; font-weight: 500; }
+.atime { margin: 0; font-size: .85rem; color: var(--pine-soft); }
+.handle.small { font-size: 1.1rem; margin: 0; }
+.arow { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn.small { padding: 8px 14px; font-size: .9rem; }
+.badge { background: var(--err); color: #fff; border-radius: 999px; font-size: .75rem; padding: 1px 7px; margin-left: 4px; }
+#pview .pcard { cursor: default; }
+#pview .modal-box { max-height: 90vh; overflow: auto; text-align: left; }
+
+/* Bounties */
+.bhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.bhead h2 { margin: 0; }
+.bcard .bhost { display: flex; gap: 12px; align-items: center; }
+.bavatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: var(--line); }
+.btitle { margin: 0; font: 800 1.2rem "Bricolage Grotesque", system-ui, sans-serif; letter-spacing: -0.02em; }
+.tag.cat { justify-self: start; background: var(--mist); }
+.modal-box.left { text-align: left; max-height: 90vh; overflow: auto; }
+.applink { text-align: left; font-weight: 700; color: var(--pine); font-size: 1.05rem; text-decoration: none; padding: 0; }
+.bswitch { max-width: 360px; }
+
+/* Spotify + profile tab */
+.spot-box { display: grid; gap: 6px; }
+.spot-title { margin: 0; font-size: .8rem; font-weight: 700; color: var(--pine-soft); text-transform: uppercase; letter-spacing: .06em; }
+.gap { margin-top: 32px; }
+.block { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; gap: 10px; max-width: 420px; margin-top: 20px; }
+.block h3 { margin: 0; }
+.block p { margin: 0; }
 </style>
 </head>
 <body>
@@ -196,7 +228,7 @@ a.btn { text-decoration: none; text-align: center; }
     <strong class="brand">Doon Vibes</strong>
     <button data-tab="discover" class="on">Discover</button>
     <button data-tab="bounties">Bounties</button>
-    <button data-tab="activity">Activity</button>
+    <button data-tab="activity">Activity <span id="badge" class="badge hidden"></span></button>
     <button data-tab="profile">My profile</button>
   </nav>
   <div class="content">
@@ -210,11 +242,52 @@ a.btn { text-decoration: none; text-align: center; }
       </div>
       <p id="dmsg" class="msg" role="status"></p>
     </section>
-    <section id="view-bounties" class="view hidden"><h2>Bounties</h2><p class="empty">The bounties board arrives in a later step.</p></section>
-    <section id="view-activity" class="view hidden"><h2>Activity</h2><p class="empty">Matches and unlocked Instagram handles will show here.</p></section>
+    <section id="view-bounties" class="view hidden">
+      <div class="bhead"><h2>Bounties</h2><button class="btn small" id="post-bounty">+ Post Bounty</button></div>
+      <div class="switch bswitch">
+        <button type="button" id="bt-board" class="on">Board</button>
+        <button type="button" id="bt-mine">My bounties</button>
+      </div>
+      <div id="blist" class="alist"></div>
+      <p id="bmsg" class="msg" role="status"></p>
+    </section>
+    <section id="view-activity" class="view hidden">
+      <h2>Activity</h2>
+      <div id="alist" class="alist"></div>
+      <p id="amsg" class="msg" role="status"></p>
+    </section>
     <section id="view-profile" class="view hidden">
       <h2>My profile</h2>
-      <button class="btn ghost" id="logout">Log out</button>
+      <p class="sub">This is how your card looks to others.</p>
+      <div id="pv-preview" class="stage"></div>
+
+      <h2 class="gap">Edit profile</h2>
+      <form id="edit-form" class="stage">
+        <label>Area in Dehradun <select id="e-locality" required></select></label>
+        <label>College or work <input id="e-college" maxlength="80"></label>
+        <label>Bio <textarea id="e-bio" maxlength="300" rows="3"></textarea></label>
+        <fieldset><legend>Interests</legend><div id="e-chips" class="chips"></div></fieldset>
+        <label>Instagram handle
+          <input id="e-ig" placeholder="@yourname" required>
+          <small>Hidden until you match or get accepted to a bounty.</small>
+        </label>
+        <button class="btn" id="e-btn">Save changes</button>
+        <p id="e-msg" class="msg" role="status"></p>
+      </form>
+
+      <div class="block">
+        <h3>Spotify</h3>
+        <p id="sp-status"></p>
+        <button class="btn" id="sp-btn" type="button">Connect Spotify</button>
+        <p id="sp-msg" class="msg" role="status"></p>
+      </div>
+
+      <div class="block">
+        <h3>Bounties</h3>
+        <button class="btn ghost" id="pv-bounties" type="button">Manage my bounties</button>
+      </div>
+
+      <div class="block"><button class="btn ghost" id="logout" type="button">Log out</button></div>
     </section>
   </div>
 </div>
@@ -232,7 +305,50 @@ a.btn { text-decoration: none; text-align: center; }
   </div>
 </div>
 
+<div id="bmodal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="b-heading">
+  <div class="modal-box left">
+    <h2 id="b-heading">Post a bounty</h2>
+    <form id="bounty-form">
+      <label>Title <input id="b-title" maxlength="80" placeholder="Movie tonight at Pacific Mall" required></label>
+      <div class="row">
+        <label>Category
+          <select id="b-cat" required>
+            <option>Movie</option><option>Cafe Hop</option><option>Study/Gaming</option>
+            <option>Sports</option><option>Other</option>
+          </select>
+        </label>
+        <label>Area <select id="b-loc" required></select></label>
+      </div>
+      <div class="row">
+        <label>Date and time <input id="b-time" type="datetime-local" required></label>
+        <label>Max spots <input id="b-spots" type="number" min="1" max="10" value="2" required></label>
+      </div>
+      <label>Details <textarea id="b-desc" maxlength="500" rows="3" placeholder="Where, who you are looking for, anything else"></textarea></label>
+      <button class="btn" id="b-btn">Post bounty</button>
+      <p id="b-msg" class="msg" role="status"></p>
+    </form>
+    <button class="link" id="b-close" type="button">Cancel</button>
+  </div>
+</div>
+
+<div id="amodal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="a-title">
+  <div class="modal-box left">
+    <h2 id="a-title"></h2>
+    <div id="a-list" class="alist"></div>
+    <p id="a-msg" class="msg" role="status"></p>
+    <button class="link" id="a-close" type="button">Close</button>
+  </div>
+</div>
+
+<div id="pview" class="modal hidden" role="dialog" aria-modal="true" aria-label="Profile">
+  <div class="modal-box">
+    <div id="pview-body"></div>
+    <button class="link" id="pview-close">Close</button>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="spotify.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
