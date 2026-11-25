@@ -96,6 +96,33 @@ nav button.on { color: var(--pine); font-weight: 700; background: var(--mist); }
   .content { margin-left: 230px; max-width: none; padding: 32px 40px; }
   .content > * { max-width: 760px; }
 }
+
+/* Discover cards */
+.stage { max-width: 420px; }
+.pcard { background: var(--paper); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; touch-action: pan-y; user-select: none; cursor: grab; transition: transform .22s ease, opacity .22s ease; }
+.pcard.drag { transition: none; cursor: grabbing; }
+.pcard.out-left { transform: translateX(-120%) rotate(-12deg) !important; opacity: 0; }
+.pcard.out-right { transform: translateX(120%) rotate(12deg) !important; opacity: 0; }
+.pphoto { display: block; width: 100%; aspect-ratio: 4 / 5; max-height: 460px; object-fit: cover; background: var(--line); pointer-events: none; }
+.pbody { padding: 16px 18px 20px; display: grid; gap: 8px; }
+.pbody h3 { margin: 0; font: 800 1.5rem "Bricolage Grotesque", system-ui, sans-serif; letter-spacing: -0.02em; }
+.ploc, .pbio, .pshared { margin: 0; }
+.ploc { color: var(--pine-soft); }
+.pshared { font-weight: 700; }
+.tag { padding: 4px 12px; border-radius: 999px; border: 1.5px solid var(--line); font-size: .9rem; }
+.tag.shared { background: var(--marigold); border-color: var(--marigold); font-weight: 700; }
+.actions { display: flex; gap: 20px; justify-content: center; margin-top: 18px; max-width: 420px; }
+.round { width: 64px; height: 64px; border-radius: 50%; border: 2px solid var(--pine); background: #fff; color: var(--pine); font-size: 1.6rem; cursor: pointer; }
+.round.like { background: var(--marigold); border-color: var(--marigold); }
+.modal { position: fixed; inset: 0; background: rgba(23, 53, 46, .6); display: grid; place-items: center; padding: 16px; z-index: 20; }
+.modal-box { background: var(--paper); border-radius: 18px; padding: 28px; max-width: 380px; width: 100%; text-align: center; display: grid; gap: 12px; }
+.modal-box h2 { margin: 0; font-size: 2rem; font-weight: 800; }
+.modal-box p { margin: 0; }
+.handle { font: 800 1.4rem "Bricolage Grotesque", system-ui, sans-serif; word-break: break-all; }
+.btns { display: grid; gap: 10px; }
+a.btn { text-decoration: none; text-align: center; }
+.link { font: inherit; background: none; border: 0; color: var(--pine-soft); cursor: pointer; text-decoration: underline; }
+@media (prefers-reduced-motion: reduce) { .pcard { transition: none; } }
 </style>
 </head>
 <body>
@@ -174,13 +201,34 @@ nav button.on { color: var(--pine); font-weight: 700; background: var(--mist); }
   </nav>
   <div class="content">
     <p id="hello" class="hello"></p>
-    <section id="view-discover" class="view"><h2>Discover</h2><p class="empty">Swipe cards arrive in the next step.</p></section>
+    <section id="view-discover" class="view">
+      <h2>Discover</h2>
+      <div id="stage" class="stage"></div>
+      <div id="swipe-btns" class="actions hidden">
+        <button class="round pass" id="pass" aria-label="Pass">&#10005;</button>
+        <button class="round like" id="like" aria-label="Like">&#9829;</button>
+      </div>
+      <p id="dmsg" class="msg" role="status"></p>
+    </section>
     <section id="view-bounties" class="view hidden"><h2>Bounties</h2><p class="empty">The bounties board arrives in a later step.</p></section>
     <section id="view-activity" class="view hidden"><h2>Activity</h2><p class="empty">Matches and unlocked Instagram handles will show here.</p></section>
     <section id="view-profile" class="view hidden">
       <h2>My profile</h2>
       <button class="btn ghost" id="logout">Log out</button>
     </section>
+  </div>
+</div>
+
+<div id="match" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="match-title">
+  <div class="modal-box">
+    <h2 id="match-title">It's a Vibe!</h2>
+    <p id="match-text"></p>
+    <p id="match-handle" class="handle"></p>
+    <div class="btns">
+      <button class="btn" id="copy-ig">Copy @handle</button>
+      <a class="btn ghost" id="open-ig" target="_blank" rel="noopener">Open Instagram</a>
+    </div>
+    <button class="link" id="match-close">Keep swiping</button>
   </div>
 </div>
 
