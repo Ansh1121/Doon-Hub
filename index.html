@@ -155,6 +155,25 @@ a.btn { text-decoration: none; text-align: center; }
 .block { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; gap: 10px; max-width: 420px; margin-top: 20px; }
 .block h3 { margin: 0; }
 .block p { margin: 0; }
+
+/* Bubble picker */
+body.noscroll { overflow: hidden; }
+#taste { position: fixed; inset: 0; z-index: 30; background: var(--mist); display: flex; flex-direction: column; padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
+.t-top, .t-foot { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 720px; margin: 0 auto; }
+.t-foot { justify-content: space-between; }
+.t-bar { flex: 1; height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; }
+.t-bar i { display: block; height: 100%; width: 0; background: var(--marigold); transition: width .3s ease; }
+.t-mid { flex: 1; display: flex; flex-direction: column; width: 100%; max-width: 720px; margin: 0 auto; overflow-y: auto; text-align: center; }
+.t-in { margin: auto 0; padding: 20px 0; display: grid; gap: 14px; justify-items: center; }
+.t-in h2 { margin: 0; font-size: clamp(1.6rem, 5vw, 2.3rem); }
+.t-in .sub { margin: 0; }
+.t-search { max-width: 320px; text-align: center; border-radius: 999px; }
+.t-bubbles { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.bubble { font: inherit; font-weight: 500; cursor: pointer; padding: 12px 20px; border-radius: 999px; border: 2px solid var(--line); background: #fff; color: var(--pine); animation: bob 4s ease-in-out infinite; animation-delay: var(--d, 0s); transition: transform .15s ease, background .15s ease, border-color .15s ease; }
+.bubble:hover { transform: scale(1.06); }
+.bubble.on { background: var(--marigold); border-color: var(--marigold); font-weight: 700; transform: scale(1.08); }
+@keyframes bob { 0%, 100% { translate: 0 0; } 50% { translate: 0 -5px; } }
+@media (prefers-reduced-motion: reduce) { .bubble { animation: none; transition: none; } }
 </style>
 </head>
 <body>
@@ -276,10 +295,9 @@ a.btn { text-decoration: none; text-align: center; }
       </form>
 
       <div class="block">
-        <h3>Spotify</h3>
-        <p id="sp-status"></p>
-        <button class="btn" id="sp-btn" type="button">Connect Spotify</button>
-        <p id="sp-msg" class="msg" role="status"></p>
+        <h3>Your vibe</h3>
+        <p id="vibe-status"></p>
+        <button class="btn" id="vibe-btn" type="button">Edit your vibe</button>
       </div>
 
       <div class="block">
@@ -348,7 +366,8 @@ a.btn { text-decoration: none; text-align: center; }
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="spotify.js"></script>
+<script src="taste-data.js"></script>
+<script src="taste.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
