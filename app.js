@@ -82,12 +82,11 @@ async function route() {
     buildChips();
     return showScreen('onboarding');
   }
-  const fromSpotify = new URLSearchParams(location.search).has('code') || new URLSearchParams(location.search).has('error');
-  if (fromSpotify) await finishSpotify();
   $('hello').textContent = 'Hi, ' + me.profile.name;
   showScreen('app');
-  showTab(fromSpotify ? 'profile' : 'discover');
+  showTab('discover');
   loadDiscover();
+  if (!(me.profile.taste && me.profile.taste.done)) openTaste(true); // first visit: show the bubble picker
   refreshBadge();
   if (!pollId) pollId = setInterval(refreshBadge, 30000);
 }
@@ -199,7 +198,7 @@ async function loadDiscover() {
   const mine = new Set(me.profile.interests);
   deck = (data || [])
     .map((p) => ({ p, shared: p.interests.filter((i) => mine.has(i)) }))
-    .sort((x, y) => (y.shared.length + 2 * sharedArtists(y.p).length) - (x.shared.length + 2 * sharedArtists(x.p).length));
+    .sort((x, y) => (y.shared.length + affinity(y.p)) - (x.shared.length + affinity(x.p)));
   // most in common first (a shared artist counts double)
   renderTop();
 }
@@ -227,6 +226,43 @@ function sharedArtists(p) {
   return (Array.isArray(p.spotify_artists) ? p.spotify_artists : []).filter((n) => mine.has(n));
 }
 
+function tasteBlock(p, body) {
+  const other = me && p.id !== me.user.id;
+  const mt = other ? (me.profile.taste || {}) : {};
+  const t = p.taste || {};
+  const mineA = new Set(other && Array.isArray(me.profile.spotify_artists) ? me.profile.spotify_artists : []);
+  const mineG = new Set((mt.games || []).map((g) => g.name));
+  const mineS = new Set(mt.sports || []);
+  const section = (title, items, note) => {
+    if (!items.length) return;
+    const box = el('div', 'spot-box');
+    box.append(el('p', 'spot-title', title));
+    const row = el('div', 'chips');
+    items.forEach((i) => row.append(el('span', 'tag' + (i.hit ? ' shared' : ''), i.t)));
+    box.append(row);
+    if (note) box.append(el('p', 'ploc', note));
+    body.append(box);
+  };
+  const arts = Array.isArray(p.spotify_artists) ? p.spotify_artists : [];
+  const genres = Array.isArray(p.spotify_genres) ? p.spotify_genres : [];
+  section('Heavy rotation', arts.slice(0, 8).map((n) => ({ t: n, hit: mineA.has(n) })), genres.join(' / '));
+  section('Plays', (t.games || []).map((g) => ({ t: g.rank ? g.name + ' - ' + g.rank : g.name, hit: mineG.has(g.name) })));
+  section('Into', (t.sports || []).map((s) => ({ t: s, hit: mineS.has(s) })));
+  if (t.bikes && (t.bikes.fav || []).length) {
+    section('Bikes', t.bikes.fav.map((b) => ({ t: b, hit: false })), t.bikes.owns === true ? 'Owns one right now' : '');
+  }
+}
+
+function affinity(p) {
+  if (!me || p.id === me.user.id) return 0;
+  const mt = me.profile.taste || {}, t = p.taste || {};
+  const games = new Set((mt.games || []).map((g) => g.name));
+  const sports = new Set(mt.sports || []);
+  return 2 * (sharedArtists(p).length
+    + (t.games || []).filter((g) => games.has(g.name)).length
+    + (t.sports || []).filter((s) => sports.has(s)).length);
+}
+
 function buildCard(p, shared) {
   const card = el('article', 'pcard');
   const img = el('img', 'pphoto');
@@ -243,19 +279,7 @@ function buildCard(p, shared) {
   body.append(chips);
   if (shared.length) body.append(el('p', 'pshared', 'You both like ' + shared.join(', ')));
 
-  const arts = Array.isArray(p.spotify_artists) ? p.spotify_artists : [];
-  if (arts.length) {
-    const common = sharedArtists(p);
-    const box = el('div', 'spot-box');
-    box.append(el('p', 'spot-title', 'Spotify Heavy Rotation'));
-    const row = el('div', 'chips');
-    arts.forEach((n) => row.append(el('span', 'tag' + (common.includes(n) ? ' shared' : ''), n)));
-    box.append(row);
-    if (common.length) box.append(el('p', 'pshared', 'You both listen to ' + common.join(', ')));
-    const genres = Array.isArray(p.spotify_genres) ? p.spotify_genres : [];
-    if (genres.length) box.append(el('p', 'ploc', genres.join(' / ')));
-    body.append(box);
-  }
+  tasteBlock(p, body);
 
   card.append(img, body);
   return card;
@@ -652,7 +676,7 @@ async function renderProfileTab() {
   editInterests.clear();
   p.interests.forEach((i) => editInterests.add(i));
   makeChips($('e-chips'), editInterests);
-  spotifyStatus();
+  vibeStatus();
   const { data } = await db.from('private_contacts').select('instagram_handle').eq('user_id', me.user.id).maybeSingle();
   $('e-ig').value = data ? '@' + data.instagram_handle : '';
 }
@@ -680,25 +704,34 @@ $('edit-form').addEventListener('submit', async (e) => {
   say(msg, 'Saved.', true);
 });
 
-function spotifyStatus() {
-  const a = Array.isArray(me.profile.spotify_artists) ? me.profile.spotify_artists : [];
-  $('sp-status').textContent = a.length ? 'Connected: ' + a.join(', ') : 'Not connected yet. Others will see your top artists on your card.';
-  $('sp-btn').textContent = a.length ? 'Re-sync Spotify' : 'Connect Spotify';
+function vibeStatus() {
+  const t = me.profile.taste || {};
+  const bits = [];
+  const n = (me.profile.spotify_artists || []).length;
+  if (n) bits.push(n + ' artists');
+  if ((t.games || []).length) bits.push(t.games.length + ' games');
+  if ((t.sports || []).length) bits.push(t.sports.length + ' sports');
+  if (t.bikes && (t.bikes.fav || []).length) bits.push('bikes');
+  $('vibe-status').textContent = bits.length
+    ? 'You picked: ' + bits.join(', ') + '.'
+    : 'Pick your music, games and sports so people can see what you have in common.';
 }
-$('sp-btn').onclick = () => Spotify.connect().catch((err) => say($('sp-msg'), err.message));
+$('vibe-btn').onclick = () => openTaste(false);
 
-async function finishSpotify() {
-  try {
-    const top = await Spotify.handleCallback();
-    if (!top) return;
+function openTaste(first) {
+  Taste.open(me.profile, async (res) => {
+    if (!res) {
+      if (!first) return; // skipped while editing: change nothing
+      res = { artists: [], genres: [], taste: { done: true } }; // skipped at the start: do not ask again
+    }
     const { data, error } = await db.from('profiles')
-      .update({ spotify_artists: top.artists, spotify_genres: top.genres })
+      .update({ spotify_artists: res.artists, spotify_genres: res.genres, taste: res.taste })
       .eq('id', me.user.id).select().single();
-    if (error) throw error;
+    if (error) return alert('Could not save your vibe: ' + error.message);
     me.profile = data;
-  } catch (err) {
-    alert('Spotify: ' + (err.message || err));
-  }
+    renderProfileTab();
+    loadDiscover();
+  });
 }
 
 $('pv-bounties').onclick = () => { setBountyTab('mine', false); showTab('bounties'); };
