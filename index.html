@@ -23,7 +23,7 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
-body { font: 16px/1.5 "Figtree", system-ui, sans-serif; color: var(--ink); background: var(--paper); }
+body { font: 16px/1.5 "Figtree", system-ui, sans-serif; color: var(--ink); background-color: var(--paper); background-image: radial-gradient(rgba(18, 20, 107, .16) 1.5px, transparent 1.6px); background-size: 24px 24px; }
 h1, h2, .brand { font-family: "Bowlby One", "Figtree", system-ui, sans-serif; font-weight: 400; letter-spacing: -0.01em; line-height: 1.1; }
 h1 { font-size: 2.1rem; margin: 0 0 6px; color: var(--cobalt); }
 h2 { font-size: 1.55rem; margin: 0 0 14px; }
@@ -33,7 +33,10 @@ body.noscroll { overflow: hidden; }
 
 /* ===== Hero (sits in front of the log in screen) ===== */
 #hero { position: fixed; inset: 0; z-index: 60; background: var(--cobalt); color: #fff; overflow: hidden; display: grid; place-items: center; padding: 24px; }
-.hero-in { display: grid; justify-items: center; gap: 30px; text-align: center; max-width: 720px; }
+#hero::before, #hero::after { content: ""; position: absolute; border: 3px solid var(--ink); border-radius: 50%; pointer-events: none; }
+#hero::before { width: 300px; height: 300px; background: var(--lemon); right: -110px; bottom: -110px; }
+#hero::after { width: 190px; height: 190px; background: var(--coral); left: -70px; top: -70px; }
+.hero-in { position: relative; display: grid; justify-items: center; gap: 30px; text-align: center; max-width: 720px; }
 .hero-title { margin: 0; font-size: clamp(3.4rem, 17vw, 9rem); line-height: .95; letter-spacing: .01em; text-transform: uppercase; color: transparent; -webkit-text-stroke: 3px #fff; paint-order: stroke fill; }
 .hero-title span { display: block; }
 .hero-btns { display: flex; align-items: center; justify-content: center; gap: 14px; }
@@ -67,7 +70,11 @@ body.noscroll { overflow: hidden; }
 }
 
 /* ===== Log in and profile screens ===== */
-.screen { min-height: 100vh; display: grid; place-items: start center; padding: 32px 16px; }
+.screen { position: relative; overflow: hidden; min-height: 100vh; display: grid; place-items: start center; padding: 32px 16px; }
+.screen::before, .screen::after { content: ""; position: absolute; border: 2px solid var(--ink); border-radius: 50%; z-index: 0; pointer-events: none; }
+.screen::before { width: 340px; height: 340px; background: var(--lemon); top: -150px; right: -110px; }
+.screen::after { width: 220px; height: 220px; background: var(--coral); bottom: -90px; left: -80px; }
+.screen > * { position: relative; z-index: 1; }
 .panel { width: 100%; max-width: 420px; background: var(--white); border: 2px solid var(--ink); border-radius: 26px; padding: 28px; box-shadow: 6px 6px 0 var(--ink); }
 .panel.wide { max-width: 640px; }
 .sub { margin: 0 0 20px; color: var(--mute); }
@@ -166,6 +173,16 @@ nav button.on { color: var(--ink); font-weight: 800; background: var(--lemon); b
 .btitle { margin: 0; font: 800 1.2rem "Figtree", system-ui, sans-serif; }
 .applink { text-align: left; font-weight: 800; color: var(--ink); font-size: 1.05rem; text-decoration: none; padding: 0; }
 .bswitch { max-width: 360px; }
+
+/* ===== Category banners ===== */
+.cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; max-width: 640px; margin: 0 0 20px; }
+.catbtn { position: relative; aspect-ratio: 4 / 3; padding: 0; border: 2px solid var(--ink); border-radius: 18px; overflow: hidden; cursor: pointer; background: var(--cobalt); box-shadow: 3px 3px 0 var(--ink); transition: transform .1s ease, box-shadow .1s ease; }
+.catbtn img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.catbtn:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink); }
+.catbtn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+.cat-label { position: absolute; left: 8px; bottom: 8px; background: #fff; color: var(--ink); border: 2px solid var(--ink); border-radius: 999px; padding: 2px 12px; font-weight: 800; font-size: .9rem; }
+.catbtn.on { outline: 4px solid var(--lemon); outline-offset: 2px; }
+.catbtn.on .cat-label { background: var(--lemon); }
 
 /* ===== Profile tab ===== */
 .spot-box { display: grid; gap: 6px; }
@@ -295,10 +312,12 @@ nav button.on { color: var(--ink); font-weight: 800; background: var(--lemon); b
     </section>
     <section id="view-bounties" class="view hidden">
       <div class="bhead"><h2>Bounties</h2><button class="btn small" id="post-bounty">+ Post Bounty</button></div>
+      <p class="sub">Find an activity to join, or host your own and find the perfect partner for it.</p>
       <div class="switch bswitch">
         <button type="button" id="bt-board" class="on">Board</button>
         <button type="button" id="bt-mine">My bounties</button>
       </div>
+      <div class="cats" id="cats"></div>
       <div id="blist" class="alist"></div>
       <p id="bmsg" class="msg" role="status"></p>
     </section>
@@ -363,8 +382,8 @@ nav button.on { color: var(--ink); font-weight: 800; background: var(--lemon); b
       <div class="row">
         <label>Category
           <select id="b-cat" required>
-            <option>Movie</option><option>Cafe Hop</option><option>Study/Gaming</option>
-            <option>Sports</option><option>Other</option>
+            <option>Movie</option><option>Cafe Hop</option><option>Sports</option>
+            <option>Study</option><option>Gaming</option><option>Other</option>
           </select>
         </label>
         <label>Area <select id="b-loc" required></select></label>
