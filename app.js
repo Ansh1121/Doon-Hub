@@ -8,13 +8,43 @@ const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $ = (id) => document.getElementById(id);
 
 let signupMode = false;
+let heroSeen = false; // the welcome screen shows once per visit (and again after log out)
 let me = null; // { user, profile }
 const picked = new Set();
 
 // ---------- 2. SMALL HELPERS ----------
 function showScreen(name) {
   ['auth', 'onboarding', 'app'].forEach((s) => $(s).classList.toggle('hidden', s !== name));
+  if (name === 'auth' && !heroSeen) { if ($('hero').classList.contains('hidden')) showHero(); }
+  else $('hero').classList.add('hidden');
 }
+
+// ---------- WELCOME (hero) ----------
+function showHero() {
+  const h = $('hero');
+  h.classList.remove('hidden', 'slide-out-blurred-top');
+  h.querySelectorAll('[data-anim]').forEach((n) => { // replay the entrance animations
+    n.classList.remove(n.dataset.anim);
+    void n.offsetWidth;
+    n.classList.add(n.dataset.anim);
+  });
+}
+function enterFromHero(signup) {
+  const h = $('hero');
+  if (h.classList.contains('slide-out-blurred-top')) return;
+  setMode(signup);
+  heroSeen = true;
+  const done = (ev) => {
+    if (ev.target !== h) return; // ignore the children's animation events
+    h.classList.add('hidden');
+    h.removeEventListener('animationend', done);
+  };
+  h.addEventListener('animationend', done);
+  setTimeout(() => h.classList.add('hidden'), 900); // safety net
+  h.classList.add('slide-out-blurred-top');
+}
+$('hero-login').onclick = () => enterFromHero(false);
+$('hero-signup').onclick = () => enterFromHero(true);
 function say(el, text, ok = false) {
   el.textContent = text;
   el.className = 'msg' + (ok ? ' ok' : '');
@@ -73,6 +103,7 @@ async function route() {
   const { data: profile, error } = await db
     .from('profiles').select('*').eq('id', session.user.id).maybeSingle();
   if (error) {
+    heroSeen = true;
     showScreen('auth');
     return say($('auth-msg'), 'Could not load your profile: ' + error.message);
   }
@@ -173,6 +204,7 @@ document.querySelectorAll('[data-tab]').forEach((btn) => {
 $('logout').onclick = async () => {
   await db.auth.signOut();
   me = null;
+  heroSeen = false; // show the welcome screen again
   route();
 };
 
