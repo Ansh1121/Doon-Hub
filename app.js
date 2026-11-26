@@ -115,6 +115,7 @@ async function route() {
   }
   $('hello').textContent = 'Hi, ' + me.profile.name;
   showScreen('app');
+  setBountyTab('board', false); // a new login always starts on the Board
   showTab('discover');
   loadDiscover();
   if (!(me.profile.taste && me.profile.taste.done)) openTaste(true); // first visit: show the bubble picker
@@ -500,21 +501,71 @@ function setBountyTab(t, load = true) {
   bountyTab = t;
   $('bt-board').classList.toggle('on', t === 'board');
   $('bt-mine').classList.toggle('on', t === 'mine');
+  $('cats').classList.toggle('hidden', t !== 'board');
   if (load) loadBounties();
 }
 $('bt-board').onclick = () => setBountyTab('board');
 $('bt-mine').onclick = () => setBountyTab('mine');
 const loadBounties = () => (bountyTab === 'board' ? loadBoard() : loadMine());
 
+// The banners. img = file in your repo next to index.html. key = the category saved in the database.
+const BCATS = [
+  { key: 'Movie', label: 'Movies', img: 'threatre.jpg' },
+  { key: 'Cafe Hop', label: 'Cafes', img: 'cafe.jpg' },
+  { key: 'Sports', label: 'Sports', img: 'sports.jpg' },
+  { key: 'Study', label: 'Study', img: 'study.jpg' },
+  { key: 'Gaming', label: 'Gaming', img: 'gaming.jpg' },
+  { key: 'Other', label: 'Other', img: null },
+];
+let boardCat = null; // null = show everything
+let boardFeed = [];
+// old bounties saved as "Study/Gaming" still show under both Study and Gaming
+const inCat = (b, key) => b.category === key || (b.category === 'Study/Gaming' && (key === 'Study' || key === 'Gaming'));
+
 async function loadBoard() {
   say($('bmsg'), 'Loading...', true);
   const { data, error } = await db.rpc('get_bounty_feed');
   if (error) return say($('bmsg'), 'Could not load bounties: ' + error.message);
-  say($('bmsg'), '');
+  boardFeed = data || [];
+  try {
+    renderBoard();
+    say($('bmsg'), '');
+  } catch (err) {
+    say($('bmsg'), 'Could not show bounties: ' + err.message);
+  }
+}
+
+function renderBoard() {
+  const box = $('cats');
+  box.replaceChildren();
+  BCATS.forEach((c) => {
+    const n = boardFeed.filter((b) => inCat(b, c.key)).length;
+    const tile = el('button', 'catbtn' + (boardCat === c.key ? ' on' : ''));
+    tile.type = 'button';
+    tile.setAttribute('aria-pressed', boardCat === c.key);
+    if (c.img) {
+      const im = el('img');
+      im.src = c.img;
+      im.alt = '';
+      im.loading = 'lazy';
+      im.onerror = () => im.remove(); // missing file: the blue tile and label still work
+      tile.append(im);
+    }
+    tile.append(el('span', 'cat-label', c.label + (n ? ' (' + n + ')' : '')));
+    tile.onclick = () => { boardCat = boardCat === c.key ? null : c.key; renderBoard(); };
+    box.append(tile);
+  });
+
   const list = $('blist');
   list.replaceChildren();
-  if (!data.length) list.append(el('p', 'empty', 'No open bounties right now. Post the first one!'));
-  data.forEach((b) => list.append(bountyCard(b)));
+  const cur = BCATS.find((c) => c.key === boardCat);
+  list.append(el('p', 'atime', cur ? 'Showing ' + cur.label + '. Tap it again to see everything.' : 'Showing everything. Tap a banner to filter.'));
+  const shown = boardCat ? boardFeed.filter((b) => inCat(b, boardCat)) : boardFeed;
+  if (!shown.length) {
+    list.append(el('p', 'empty', cur ? 'No ' + cur.label + ' bounties right now. Post the first one!'
+      : 'No open bounties right now. Bounties disappear a few hours after their start time.'));
+  }
+  shown.forEach((b) => list.append(bountyCard(b)));
 }
 
 function bountyCard(b) {
@@ -532,7 +583,12 @@ function bountyCard(b) {
   c.append(el('p', 'atime', `${fmtTime(b.event_time)} - ${b.locality} - ${left} of ${b.max_spots} spots left`));
 
   const btn = el('button', 'btn small');
-  if (b.my_status === 'accepted') {
+  const mineB = b.host_id === me.user.id;
+  if (mineB) {
+    btn.textContent = 'Yours - manage';
+    btn.classList.add('ghost');
+    btn.onclick = () => setBountyTab('mine');
+  } else if (b.my_status === 'accepted') {
     btn.textContent = 'Accepted! See Activity';
     btn.onclick = () => showTab('activity');
   } else if (b.my_status === 'declined') {
@@ -561,7 +617,8 @@ function bountyCard(b) {
   const hostBtn = el('button', 'btn small ghost', 'View host');
   hostBtn.onclick = () => viewProfile(b.host_id);
   const row = el('div', 'arow');
-  row.append(btn, hostBtn);
+  row.append(btn);
+  if (!mineB) row.append(hostBtn);
   c.append(row);
   return c;
 }
@@ -607,6 +664,7 @@ async function loadMine() {
 $('post-bounty').onclick = () => {
   $('b-loc').innerHTML = $('locality').innerHTML;
   $('b-loc').value = me.profile.locality;
+  if (boardCat && bountyTab === 'board') $('b-cat').value = boardCat; // posting from a filtered view starts on that category
   const soon = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
   $('b-time').min = soon.toISOString().slice(0, 16);
   say($('b-msg'), '');
