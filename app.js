@@ -153,16 +153,14 @@ $('profile-form').addEventListener('submit', async (e) => {
 
   $('ob-btn').disabled = true;
   say(msg, 'Saving...', true);
+  const uploadedPaths = [];
   try {
-    // a) upload photo into your own folder
-    const file = $('photo').files[0];
-    if (file.size > 2 * 1024 * 1024) throw new Error('Photo must be under 2 MB.');
-    const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[file.type];
-    if (!ext) throw new Error('Photo must be JPG, PNG or WEBP.');
-    const path = `${uid}/avatar.${ext}`;
-    const up = await db.storage.from('avatars').upload(path, file, { upsert: true, contentType: file.type });
-    if (up.error) throw up.error;
-    const avatar_url = db.storage.from('avatars').getPublicUrl(path).data.publicUrl + '?v=' + Date.now();
+    // a) upload photos into your own folder (the first one is the main photo)
+    const files = [...$('photo').files];
+    if (!files.length) throw new Error('Add at least one photo.');
+    if (files.length > MAX_PROFILE_PHOTOS) throw new Error('You can add up to ' + MAX_PROFILE_PHOTOS + ' photos.');
+    const urls = await uploadProfilePhotos(files, uid, uploadedPaths);
+    const avatar_url = urls[0];
 
     // b) save the public profile
     const p = await db.from('profiles').insert({
@@ -174,6 +172,7 @@ $('profile-form').addEventListener('submit', async (e) => {
       bio: $('bio').value.trim() || null,
       interests: [...picked],
       avatar_url,
+      photos: urls,
     });
     if (p.error) throw p.error;
 
@@ -186,6 +185,7 @@ $('profile-form').addEventListener('submit', async (e) => {
     say(msg, '');
     route();
   } catch (err) {
+    if (uploadedPaths.length) db.storage.from('avatars').remove(uploadedPaths); // no orphan photos after a failed try
     say(msg, err.message || 'Something went wrong. Try again.');
   }
   $('ob-btn').disabled = false;
@@ -193,10 +193,12 @@ $('profile-form').addEventListener('submit', async (e) => {
 
 // ---------- 6. TABS AND LOG OUT ----------
 function showTab(name) {
+  document.body.dataset.tab = name; // each tab has its own accent colour
   document.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('hidden', v.id !== 'view-' + name));
   if (name === 'activity') loadActivity();
   if (name === 'bounties') loadBounties();
+  if (name === 'feed') loadFeed();
   if (name === 'profile') renderProfileTab();
 }
 document.querySelectorAll('[data-tab]').forEach((btn) => {
@@ -298,9 +300,7 @@ function affinity(p) {
 
 function buildCard(p, shared) {
   const card = el('article', 'pcard');
-  const img = el('img', 'pphoto');
-  img.alt = 'Photo of ' + p.name;
-  if (p.avatar_url && p.avatar_url.startsWith(AVATAR_PREFIX)) img.src = p.avatar_url;
+  const gal = buildGallery(p);
 
   const body = el('div', 'pbody');
   body.append(el('h3', '', `${p.name}, ${p.age}`));
@@ -314,13 +314,58 @@ function buildCard(p, shared) {
 
   tasteBlock(p, body);
 
-  card.append(img, body);
+  card.append(gal, body);
   return card;
 }
 
+// All of a person's photos (older profiles only have avatar_url).
+function photoList(p) {
+  const list = Array.isArray(p.photos) && p.photos.length ? p.photos : (p.avatar_url ? [p.avatar_url] : []);
+  return list.filter((u) => typeof u === 'string' && u.startsWith(AVATAR_PREFIX)).slice(0, MAX_PROFILE_PHOTOS);
+}
+
+// Photo area on a card: tap the right half for the next photo, the left half for the previous one.
+function buildGallery(p) {
+  const urls = photoList(p);
+  const gal = el('div', 'pgal');
+  const img = el('img', 'pphoto');
+  gal.append(img);
+  let i = 0;
+  const dots = el('div', 'pdots');
+  const show = (k) => {
+    i = Math.max(0, Math.min(urls.length - 1, k));
+    img.src = urls[i];
+    img.alt = 'Photo ' + (i + 1) + ' of ' + urls.length + ' of ' + p.name;
+    [...dots.children].forEach((d, j) => d.classList.toggle('on', j === i));
+  };
+  gal._go = (d) => show(i + d);
+  if (urls.length > 1) {
+    urls.forEach(() => dots.append(el('i')));
+    gal.append(dots);
+    const prev = el('button', 'gbtn gprev');
+    const next = el('button', 'gbtn gnext');
+    prev.type = next.type = 'button';
+    prev.setAttribute('aria-label', 'Previous photo');
+    next.setAttribute('aria-label', 'Next photo');
+    // On the swipe deck, mouse and touch taps are handled by attachDrag; keyboard clicks (detail 0) come here.
+    prev.onclick = (e) => { if (gal._tap && e.detail > 0) return; show(i - 1); };
+    next.onclick = (e) => { if (gal._tap && e.detail > 0) return; show(i + 1); };
+    gal.append(prev, next);
+  }
+  if (urls.length) {
+    show(0);
+    urls.slice(1).forEach((u) => { const pre = new Image(); pre.src = u; }); // preload so flipping is instant
+  } else {
+    img.alt = 'No photo';
+  }
+  return gal;
+}
+
 function attachDrag(card) {
+  const g = card.querySelector('.pgal');
+  if (g) g._tap = true;
   card.addEventListener('pointerdown', (e) => {
-    drag = { x: e.clientX };
+    drag = { x: e.clientX, gal: e.target.closest ? e.target.closest('.pgal') : null };
     card.setPointerCapture(e.pointerId);
     card.classList.add('drag');
   });
@@ -332,9 +377,14 @@ function attachDrag(card) {
   card.addEventListener('pointerup', (e) => {
     if (!drag) return;
     const dx = e.clientX - drag.x;
+    const tapGal = Math.abs(dx) < 8 ? drag.gal : null; // a tap, not a swipe
     drag = null;
     card.classList.remove('drag');
-    if (Math.abs(dx) > 110) swipe(dx > 0);
+    if (tapGal && tapGal._go) {
+      const r = tapGal.getBoundingClientRect();
+      tapGal._go(e.clientX < r.left + r.width / 2 ? -1 : 1);
+      card.style.transform = '';
+    } else if (Math.abs(dx) > 110) swipe(dx > 0);
     else card.style.transform = '';
   });
 }
@@ -488,6 +538,7 @@ async function blockUser(id) {
   if (error) return alert('Could not block: ' + error.message);
   $('pview').classList.add('hidden');
   loadDiscover();
+  if (document.body.dataset.tab === 'feed') loadFeed(); // hide their posts right away
 }
 
 $('pview-close').onclick = () => $('pview').classList.add('hidden');
@@ -507,6 +558,29 @@ function setBountyTab(t, load = true) {
 $('bt-board').onclick = () => setBountyTab('board');
 $('bt-mine').onclick = () => setBountyTab('mine');
 const loadBounties = () => (bountyTab === 'board' ? loadBoard() : loadMine());
+
+// Little animated pictures for the bounty cards (plain SVG, styled in the CSS above).
+const INK = '#12146B';
+const S = `stroke="${INK}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"`;
+const ART = {
+  movie: `<svg class="art" viewBox="0 0 64 64"><rect x="8" y="26" width="48" height="30" rx="4" fill="#fff" ${S}/><path d="M8 38h48" fill="none" ${S}/><g class="clap"><rect x="8" y="14" width="48" height="12" rx="3" fill="${INK}"/><path d="M19 14l-6 12M31 14l-6 12M43 14l-6 12M55 14l-6 12" stroke="#fff" stroke-width="4" fill="none"/></g></svg>`,
+  cafe: `<svg class="art" viewBox="0 0 64 64"><path class="steam s1" d="M24 18c-4 5 4 7 0 12" fill="none" ${S}/><path class="steam s2" d="M32 14c-4 5 4 7 0 12" fill="none" ${S}/><path class="steam s3" d="M40 18c-4 5 4 7 0 12" fill="none" ${S}/><path d="M14 34h32v8a14 14 0 0 1-14 14h-4a14 14 0 0 1-14-14z" fill="#fff" ${S}/><path d="M46 38h3a6 6 0 0 1 0 12h-5" fill="none" ${S}/></svg>`,
+  sports: `<svg class="art" viewBox="0 0 64 64"><ellipse class="shadow" cx="32" cy="58" rx="14" ry="3" fill="${INK}" opacity=".25"/><g class="bounce"><circle cx="32" cy="30" r="20" fill="#FF6B5B" ${S}/><path d="M12 30h40M32 10v40M17 17c8 8 8 22 0 30M47 17c-8 8-8 22 0 30" fill="none" stroke="${INK}" stroke-width="2.5" stroke-linecap="round"/></g></svg>`,
+  study: `<svg class="art" viewBox="0 0 64 64"><rect x="10" y="8" width="38" height="48" rx="4" fill="#fff" ${S}/><path d="M18 22h22M18 32h22M18 42h14" fill="none" stroke="${INK}" stroke-width="2.5" stroke-linecap="round"/><g class="pencil"><path d="M44 34l12-12 6 6-12 12-8 2z" fill="#FFD93D" ${S}/></g></svg>`,
+  gaming: `<svg class="art" viewBox="0 0 64 64"><g class="pad"><path d="M16 24h32a10 10 0 0 1 10 10l2 10a6 6 0 0 1-10 4l-5-6H19l-5 6a6 6 0 0 1-10-4l2-10a10 10 0 0 1 10-10z" fill="#fff" ${S}/><path d="M20 31v10M15 36h10" fill="none" ${S}/><circle class="b1" cx="44" cy="33" r="3.2" fill="#FF6B5B"/><circle class="b2" cx="50" cy="38" r="3.2" fill="#FFD93D"/></g></svg>`,
+  other: `<svg class="art" viewBox="0 0 64 64"><path class="spin" d="M32 8l6 16 16 6-16 6-6 16-6-16-16-6 16-6z" fill="#FFD93D" ${S}/></svg>`,
+};
+const CAT_SLUG = { 'Movie': 'movie', 'Cafe Hop': 'cafe', 'Sports': 'sports', 'Study': 'study', 'Gaming': 'gaming', 'Study/Gaming': 'study', 'Other': 'other' };
+function catStrip(category) {
+  const slug = CAT_SLUG[category] || 'other';
+  const strip = el('div', 'bart cat-' + slug);
+  strip.append(el('span', 'tag', category));
+  const art = el('div');
+  art.setAttribute('aria-hidden', 'true');
+  art.innerHTML = ART[slug]; // fixed strings above, never user text
+  strip.append(art);
+  return strip;
+}
 
 // The banners. img = file in your repo next to index.html. key = the category saved in the database.
 const BCATS = [
@@ -577,7 +651,7 @@ function bountyCard(b) {
   const who = el('div');
   who.append(el('strong', '', `${b.host_name}, ${b.host_age}`), el('div', 'atime', b.host_locality));
   top.append(img, who);
-  c.append(top, el('span', 'tag cat', b.category), el('h3', 'btitle', b.title));
+  c.append(catStrip(b.category), top, el('h3', 'btitle', b.title));
   if (b.description) c.append(el('p', 'pbio', b.description));
   const left = b.max_spots - b.accepted_count;
   c.append(el('p', 'atime', `${fmtTime(b.event_time)} - ${b.locality} - ${left} of ${b.max_spots} spots left`));
@@ -642,7 +716,7 @@ async function loadMine() {
     const pending = mine.filter((a) => a.status === 'pending').length;
     const accepted = mine.filter((a) => a.status === 'accepted').length;
     const c = el('article', 'alert');
-    c.append(el('span', 'tag cat', b.category), el('h3', 'btitle', b.title),
+    c.append(catStrip(b.category), el('h3', 'btitle', b.title),
       el('p', 'atime', `${fmtTime(b.event_time)} - ${b.locality} - ${accepted} of ${b.max_spots} accepted - ${b.status}`));
     const row = el('div', 'arow');
     const view = el('button', 'btn small', `View Applicants (${pending})`);
@@ -759,6 +833,7 @@ function makeChips(box, set) {
 async function renderProfileTab() {
   const p = me.profile;
   $('pv-preview').replaceChildren(buildCard(p, []));
+  renderPhotoGrid();
   $('e-locality').innerHTML = $('locality').innerHTML;
   $('e-locality').value = p.locality;
   $('e-college').value = p.college || '';
@@ -825,6 +900,276 @@ function openTaste(first) {
 }
 
 $('pv-bounties').onclick = () => { setBountyTab('mine', false); showTab('bounties'); };
+
+// ---------- 11. FEED (posts with up to 3 photos) ----------
+const POST_PREFIX = SUPABASE_URL + '/storage/v1/object/public/post-images/';
+const MAX_PHOTOS = 3;
+let postPhotos = [];   // photos waiting to be posted: { blob, url }
+let feedRows = [];
+let feedMore = false;
+
+function timeAgo(iso) {
+  const s = Math.max(1, Math.floor((Date.now() - new Date(iso)) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  return Math.floor(s / 86400) + ' d ago';
+}
+
+// Shrinks a phone photo to about 1280px wide. Re-saving it this way also removes hidden data like GPS location.
+const MAX_PHOTO_MB = 10; // biggest photo someone can pick; it is shrunk before upload
+async function shrinkPhoto(file, maxSide = 1280) {
+  if (!file.type.startsWith('image/')) throw new Error('That file is not a photo.');
+  if (file.size > MAX_PHOTO_MB * 1024 * 1024) throw new Error('That photo is over ' + MAX_PHOTO_MB + ' MB.');
+  let bmp;
+  try { bmp = await createImageBitmap(file); } catch (e) { throw new Error('Could not read that photo. Try a JPG or PNG.'); }
+  const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k);
+  c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  if (bmp.close) bmp.close();
+  return new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('Could not process that photo.'))), 'image/jpeg', 0.82));
+}
+
+function renderPreviews() {
+  const box = $('p-previews');
+  box.replaceChildren();
+  postPhotos.forEach((p, i) => {
+    const wrap = el('div', 'pv');
+    const im = el('img');
+    im.src = p.url;
+    im.alt = 'Photo ' + (i + 1) + ' to post';
+    const x = el('button', '', '\u00d7');
+    x.type = 'button';
+    x.setAttribute('aria-label', 'Remove photo ' + (i + 1));
+    x.onclick = () => { URL.revokeObjectURL(p.url); postPhotos.splice(i, 1); renderPreviews(); };
+    wrap.append(im, x);
+    box.append(wrap);
+  });
+  $('p-add').disabled = postPhotos.length >= MAX_PHOTOS;
+}
+
+$('p-add').onclick = () => $('p-files').click();
+$('p-files').onchange = async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  const room = MAX_PHOTOS - postPhotos.length;
+  say($('p-msg'), files.length > room ? 'You can add up to 3 photos.' : '');
+  for (const f of files.slice(0, room)) {
+    try {
+      const blob = await shrinkPhoto(f);
+      postPhotos.push({ blob, url: URL.createObjectURL(blob) });
+    } catch (err) { say($('p-msg'), err.message); }
+  }
+  renderPreviews();
+};
+$('p-body').addEventListener('input', () => { $('p-count').textContent = $('p-body').value.length + ' / 500'; });
+
+$('post-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = $('p-msg');
+  const text = $('p-body').value.trim();
+  if (!text && !postPhotos.length) return say(msg, 'Write something or add a photo.');
+  $('p-btn').disabled = true;
+  say(msg, postPhotos.length ? 'Uploading...' : 'Posting...', true);
+  const paths = [];
+  try {
+    for (const p of postPhotos) {
+      const path = me.user.id + '/' + crypto.randomUUID() + '.jpg';
+      const up = await db.storage.from('post-images').upload(path, p.blob, { contentType: 'image/jpeg' });
+      if (up.error) throw up.error;
+      paths.push(path);
+    }
+    const images = paths.map((p) => db.storage.from('post-images').getPublicUrl(p).data.publicUrl);
+    const { error } = await db.from('posts').insert({ author_id: me.user.id, body: text || null, images });
+    if (error) throw error;
+  } catch (err) {
+    if (paths.length) db.storage.from('post-images').remove(paths); // do not leave orphan photos behind
+    $('p-btn').disabled = false;
+    return say(msg, 'Could not post: ' + (err.message || err));
+  }
+  $('p-btn').disabled = false;
+  postPhotos.forEach((p) => URL.revokeObjectURL(p.url));
+  postPhotos = [];
+  $('post-form').reset();
+  $('p-count').textContent = '0 / 500';
+  renderPreviews();
+  say(msg, '');
+  loadFeed();
+});
+
+async function loadFeed(more = false) {
+  const msg = $('fmsg');
+  if (!more) say(msg, 'Loading...', true);
+  const older = more && feedRows.length ? feedRows[feedRows.length - 1].created_at : null;
+  const { data, error } = await db.rpc('get_feed', { lim: 20, older_than: older });
+  if (error) return say(msg, 'Could not load the feed: ' + error.message);
+  feedRows = more ? feedRows.concat(data) : data;
+  feedMore = data.length === 20;
+  try {
+    renderFeed();
+    say(msg, '');
+  } catch (err) {
+    say(msg, 'Could not show the feed: ' + err.message);
+  }
+}
+$('f-more').onclick = () => loadFeed(true);
+
+function renderFeed() {
+  const list = $('flist');
+  list.replaceChildren();
+  if (!feedRows.length) list.append(el('p', 'empty', 'No posts yet. Be the first to share something!'));
+  feedRows.forEach((r) => list.append(postCard(r)));
+  $('f-more').classList.toggle('hidden', !feedMore);
+}
+
+function postCard(r) {
+  const own = r.author_id === me.user.id;
+  const c = el('article', 'post');
+  const head = el('div', 'post-head');
+  const av = el('img', 'bavatar');
+  av.alt = '';
+  if (r.author_avatar && r.author_avatar.startsWith(AVATAR_PREFIX)) av.src = r.author_avatar;
+  const who = el('button', 'post-who');
+  who.type = 'button';
+  who.append(el('strong', '', r.author_name + ', ' + r.author_age), el('div', 'atime', r.author_locality + ' - ' + timeAgo(r.created_at)));
+  if (own) who.disabled = true; else who.onclick = () => viewProfile(r.author_id);
+  head.append(av, who);
+  c.append(head);
+  if (r.body) c.append(el('p', 'post-body', r.body));
+  const imgs = (r.images || []).filter((u) => typeof u === 'string' && u.startsWith(POST_PREFIX)).slice(0, MAX_PHOTOS);
+  if (imgs.length) {
+    const grid = el('div', 'post-imgs n' + imgs.length);
+    imgs.forEach((u) => { const im = el('img'); im.src = u; im.alt = 'Photo in post'; im.loading = 'lazy'; grid.append(im); });
+    c.append(grid);
+  }
+  const row = el('div', 'arow');
+  const btn = el('button', 'btn small ghost', own ? 'Delete' : 'Report');
+  btn.onclick = () => (own ? deletePost(r) : reportPost(r));
+  row.append(btn);
+  c.append(row);
+  return c;
+}
+
+async function deletePost(r) {
+  if (!confirm('Delete this post?')) return;
+  const { error } = await db.from('posts').delete().eq('id', r.id);
+  if (error) return say($('fmsg'), 'Could not delete: ' + error.message);
+  const paths = (r.images || []).filter((u) => u.startsWith(POST_PREFIX)).map((u) => u.slice(POST_PREFIX.length));
+  if (paths.length) db.storage.from('post-images').remove(paths);
+  loadFeed();
+}
+
+async function reportPost(r) {
+  const reason = prompt('What is wrong with this post? (3 to 400 characters)');
+  if (!reason || reason.trim().length < 3) return;
+  const { error } = await db.from('reports').insert({
+    reporter_id: me.user.id, reported_id: r.author_id,
+    reason: ('Post ' + r.id + ': ' + reason.trim().slice(0, 400)),
+  });
+  alert(error ? 'Could not send report: ' + error.message : 'Report sent. Thank you.');
+}
+
+// ---------- 12. YOUR PHOTOS (up to 5) ----------
+const MAX_PROFILE_PHOTOS = 5;
+
+// Shrinks each photo, uploads it to your own folder, and returns the public links.
+async function uploadProfilePhotos(files, uid, pathsOut) {
+  const urls = [];
+  for (const f of files) {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(f.type)) throw new Error('Photos must be JPG, PNG or WEBP.');
+    const blob = await shrinkPhoto(f, 1600);
+    const path = uid + '/photo-' + crypto.randomUUID() + '.jpg';
+    const up = await db.storage.from('avatars').upload(path, blob, { contentType: 'image/jpeg' });
+    if (up.error) throw up.error;
+    pathsOut.push(path);
+    urls.push(db.storage.from('avatars').getPublicUrl(path).data.publicUrl);
+  }
+  return urls;
+}
+
+async function savePhotos(list) {
+  const { data, error } = await db.from('profiles')
+    .update({ photos: list, avatar_url: list[0] || null }).eq('id', me.user.id).select().single();
+  if (error) throw error;
+  me.profile = data;
+}
+
+function renderPhotoGrid() {
+  const grid = $('ph-grid');
+  const list = photoList(me.profile);
+  grid.replaceChildren();
+  list.forEach((u, i) => {
+    const box = el('div', 'ph');
+    const im = el('img');
+    im.src = u;
+    im.alt = 'Your photo ' + (i + 1);
+    box.append(im);
+    const x = el('button', 'x', '\u00d7');
+    x.type = 'button';
+    x.setAttribute('aria-label', 'Remove photo ' + (i + 1));
+    x.onclick = () => removePhoto(u);
+    box.append(x);
+    if (i === 0) {
+      box.append(el('span', 'main', 'Main'));
+    } else {
+      const set = el('button', 'main ph-set', 'Make main');
+      set.type = 'button';
+      set.onclick = () => makeMain(u);
+      box.append(set);
+    }
+    grid.append(box);
+  });
+  $('ph-add').disabled = list.length >= MAX_PROFILE_PHOTOS;
+}
+
+async function photosChanged() {
+  renderPhotoGrid();
+  $('pv-preview').replaceChildren(buildCard(me.profile, []));
+}
+
+async function removePhoto(url) {
+  const list = photoList(me.profile);
+  if (list.length <= 1) return say($('ph-msg'), 'Keep at least one photo.');
+  try {
+    await savePhotos(list.filter((u) => u !== url));
+  } catch (err) { return say($('ph-msg'), 'Could not remove it: ' + err.message); }
+  say($('ph-msg'), '');
+  const path = decodeURIComponent(url.slice(AVATAR_PREFIX.length).split('?')[0]);
+  db.storage.from('avatars').remove([path]);
+  photosChanged();
+}
+
+async function makeMain(url) {
+  const list = photoList(me.profile);
+  try {
+    await savePhotos([url, ...list.filter((u) => u !== url)]);
+  } catch (err) { return say($('ph-msg'), 'Could not change it: ' + err.message); }
+  say($('ph-msg'), '');
+  photosChanged();
+}
+
+$('ph-add').onclick = () => $('ph-files').click();
+$('ph-files').onchange = async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  const have = photoList(me.profile);
+  const room = MAX_PROFILE_PHOTOS - have.length;
+  if (!files.length) return;
+  const msg = $('ph-msg');
+  say(msg, files.length > room ? 'Only the first ' + room + ' were added (5 photos max). Uploading...' : 'Uploading...', true);
+  const paths = [];
+  try {
+    const urls = await uploadProfilePhotos(files.slice(0, Math.max(room, 0)), me.user.id, paths);
+    await savePhotos([...have, ...urls]);
+  } catch (err) {
+    if (paths.length) db.storage.from('avatars').remove(paths);
+    return say(msg, 'Could not add photos: ' + (err.message || err));
+  }
+  say(msg, '');
+  photosChanged();
+};
 
 // ---------- START ----------
 setMode(false);
